@@ -165,7 +165,11 @@
         body: JSON.stringify(body),
         signal: ctrl.signal
       });
-      if (!res.ok) throw new Error('http_' + res.status);
+      if (!res.ok) {
+        let detail = {};
+        try { detail = await res.json(); } catch (e) { /* not JSON */ }
+        throw new Error(['http_' + res.status, detail.error, detail.status, detail.model, detail.message].filter(Boolean).join(' | '));
+      }
       return await res.json();
     } finally {
       clearTimeout(timeout);

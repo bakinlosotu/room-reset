@@ -3,9 +3,12 @@
 // The photo is never written to disk or logged here.
 // Env vars (Vercel > Project > Settings > Environment Variables):
 //   GEMINI_API_KEY  required, from https://aistudio.google.com (no billing account = free tier only)
-//   GEMINI_MODEL    optional, defaults to gemini-flash-latest
+//   GEMINI_MODEL    optional; tried first, then the free Flash models below
 
-const MODEL = process.env.GEMINI_MODEL || 'gemini-flash-latest';
+// Tried in order until one exists for this key. Model names change over time,
+// so a "not found" moves on to the next instead of failing the photo.
+const MODELS = [process.env.GEMINI_MODEL, 'gemini-flash-latest', 'gemini-2.5-flash', 'gemini-flash-lite-latest', 'gemini-2.5-flash-lite']
+  .filter((m, i, all) => m && all.indexOf(m) === i);
 const EFFORTS = ['tiny', 'small', 'a bit more'];
 const BANNED = /\b(clean|tidy|organi[sz]e|declutter|sort)\s+(up\s+)?(the\s+|your\s+)?(whole\s+|entire\s+)?(room|bedroom|everything|space|flat|house)\b|\btidy everything\b/i;
 const MAX_IMAGE_CHARS = 2000000; // ~1.5 MB of JPEG; the app sends ~100-200 KB
@@ -80,29 +83,39 @@ module.exports = async function handler(req, res) {
 
   const ctrl = new AbortController();
   const timeout = setTimeout(() => ctrl.abort(), UPSTREAM_TIMEOUT_MS);
+  const request = JSON.stringify({
+    contents: [{
+      role: 'user',
+      parts: [
+        { inline_data: { mime_type: 'image/jpeg', data: image } },
+        { text: mode === 'check' ? CHECK_PROMPT : stepsPrompt(easier, avoid) }
+      ]
+    }],
+    generationConfig: { responseMimeType: 'application/json', temperature: 0.6 }
+  });
   try {
-    const upstream = await fetch(
-      'https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(MODEL) + ':generateContent',
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
-        body: JSON.stringify({
-          contents: [{
-            role: 'user',
-            parts: [
-              { inline_data: { mime_type: 'image/jpeg', data: image } },
-              { text: mode === 'check' ? CHECK_PROMPT : stepsPrompt(easier, avoid) }
-            ]
-          }],
-          generationConfig: { responseMimeType: 'application/json', temperature: 0.6 }
-        }),
-        signal: ctrl.signal
-      }
-    );
-    if (upstream.status === 429) return res.status(429).json({ error: 'rate_limited' });
+    let upstream = null;
+    let model = null;
+    for (model of MODELS) {
+      upstream = await fetch(
+        'https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(model) + ':generateContent',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
+          body: request,
+          signal: ctrl.signal
+        }
+      );
+      if (upstream.status !== 404) break;
+      console.error('Gemini model not found', model);
+    }
+    if (upstream.status === 429) return res.status(429).json({ error: 'rate_limited', model });
     if (!upstream.ok) {
-      console.error('Gemini error', upstream.status);
-      return res.status(502).json({ error: 'upstream_error' });
+      // Google's message says why (bad key, API not enabled, region, model); it never contains the key.
+      let message = '';
+      try { message = ((await upstream.json()).error || {}).message || ''; } catch (e) { /* not JSON */ }
+      console.error('Gemini error', upstream.status, model, message);
+      return res.status(502).json({ error: 'upstream_error', status: upstream.status, model, message: message.slice(0, 300) });
     }
     const data = await upstream.json();
     const parts = (data && data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts) || [];
