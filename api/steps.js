@@ -5,8 +5,8 @@
 //   GEMINI_API_KEY  required, from https://aistudio.google.com (no billing account = free tier only)
 //   GEMINI_MODEL    optional; tried first, then the free Flash models below
 
-// Tried in order until one exists for this key. Model names change over time,
-// so a "not found" moves on to the next instead of failing the photo.
+// Tried in order until one answers. Model names change over time and busy models
+// turn free-tier requests away, so either moves on to the next instead of failing the photo.
 const MODELS = [process.env.GEMINI_MODEL, 'gemini-flash-latest', 'gemini-2.5-flash', 'gemini-flash-lite-latest', 'gemini-2.5-flash-lite']
   .filter((m, i, all) => m && all.indexOf(m) === i);
 const EFFORTS = ['tiny', 'small', 'a bit more'];
@@ -106,8 +106,9 @@ module.exports = async function handler(req, res) {
           signal: ctrl.signal
         }
       );
-      if (upstream.status !== 404) break;
-      console.error('Gemini model not found', model);
+      // Not found, or overloaded (free-tier requests are the first turned away): try the next model.
+      if (![404, 500, 503].includes(upstream.status)) break;
+      console.error('Gemini model unavailable', model, upstream.status);
     }
     if (upstream.status === 429) return res.status(429).json({ error: 'rate_limited', model });
     if (!upstream.ok) {
