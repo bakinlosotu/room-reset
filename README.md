@@ -1,0 +1,92 @@
+# Room Reset — MVP
+
+One photo (or one spot) in, three tiny steps out. Built to validate the PRD's Phase 1 at **£0**.
+
+## What's in the box
+
+| File | What it does |
+| --- | --- |
+| `index.html` | The page shell |
+| `styles.css` | Mobile-first styles, light and dark |
+| `app.js` | All screens: home, spot picker, choose, do (with optional 2-minute timer), celebrate, stop, resume, progress photos, analytics |
+| `steps-library.js` | Built-in tiny steps for each spot, plus starter steps used whenever the AI is unavailable |
+| `api/steps.js` | Vercel serverless function: sends the compressed photo to Google Gemini's free tier and returns 3 steps |
+
+No build step, no npm packages, no database.
+
+## Why it costs nothing
+
+- **Hosting:** Vercel Hobby plan (free).
+- **AI:** Google Gemini API free tier. Create the key in Google AI Studio **without** adding a billing account, so it can never charge you. If the free quota runs out, the app quietly switches to built-in steps.
+- **Spot picker:** no AI at all.
+- **Analytics:** events are kept on each device (open `?debug=1` to see and download them). Optionally, connect PostHog's free plan to collect them from every tester in one place.
+
+> Privacy trade-off: on Gemini's free tier, Google may use what you send to improve its products. The app tells testers this before they take a photo. Before a public launch, move to a paid tier or another provider that doesn't train on your data.
+
+## Open it in Antigravity
+
+1. In Antigravity, choose **Open Folder** and select this `room-reset` folder.
+2. Paste this into the agent if you want it to check the project first:
+
+```text
+This is a no-build static web app (index.html, styles.css, app.js, steps-library.js)
+with one Vercel serverless function in api/steps.js. Read every file, explain how
+the flow works, and do not add frameworks, npm packages or a build step. Then help
+me run it locally with `npx vercel dev` so /api/steps works.
+```
+
+## Run it locally
+
+You need Node.js (free, from nodejs.org) for the API to work locally.
+
+```bash
+npx vercel dev
+```
+
+Then open http://localhost:3000. Without `GEMINI_API_KEY`, photos fall back to built-in steps, which is useful for testing that path.
+
+## Get a free Gemini key
+
+1. Go to https://aistudio.google.com and sign in with a Google account.
+2. Click **Get API key** → **Create API key**. Do not set up billing.
+3. Keep the key private. Never put it in `app.js` or commit it to GitHub.
+
+## Put it on GitHub
+
+Use Antigravity's Source Control panel, or GitHub Desktop (free):
+
+1. Create a new **private** repository called `room-reset`.
+2. Commit all files in this folder and push.
+
+## Deploy on Vercel
+
+1. Sign in at https://vercel.com with GitHub (Hobby plan).
+2. **Add New → Project**, import `room-reset`. Framework preset: **Other**. No build command.
+3. Under **Environment Variables**, add `GEMINI_API_KEY` = your key.
+4. Optional: add `GEMINI_MODEL` if you want a different free model (default `gemini-flash-latest`; try `gemini-flash-lite-latest` if steps are too slow).
+5. Deploy. Every push to GitHub redeploys automatically.
+
+## Optional: collect test data with PostHog (free)
+
+1. Create a free PostHog Cloud **EU** account and project.
+2. Copy the project API key into `POSTHOG_KEY` at the top of `app.js` (this key is designed to be public).
+3. Build a funnel: `app_open` → `steps_shown` → `step_chosen` → `step_done`, broken down by `arm`.
+
+## Map to the PRD metrics
+
+| PRD metric | Event(s) |
+| --- | --- |
+| Key: first-step completion | `app_open` (new_user) → `step_done` with `first: true`, by `arm` |
+| Time to first "Done" | `ms_since_open` on `step_done` (first) |
+| 7-day return | a second `app_open` session from the same person within 7 days |
+| Steps per session | `n` on the last `step_done` per `session` |
+| Guardrail: 3× easier then leave | `step_easier` with `n: 3` followed by `page_hide` |
+| Guardrail: feeling | `feeling` (better / same / worse) |
+| Guardrail: suggestion failures | `steps_fallback` and `photo_unclear` ÷ `photo_submitted` |
+| Step quality | `step_feedback` (up / down) with the step text |
+
+## Testing tips
+
+- Force a test group: `?arm=photo_first` or `?arm=picker_first` (only for your own testing; real testers are split 50/50 automatically).
+- See events on a device: `?debug=1`.
+- Daily free photo starts: `DAILY_PHOTO_CAP` in `app.js` (default 5).
