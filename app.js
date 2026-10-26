@@ -234,6 +234,8 @@
       state.hasPerson = data.hasPerson !== false;
       state.heavyClutter = !!data.heavyClutter;
       if (data.status === 'unclear' || !Array.isArray(data.steps) || data.steps.length === 0) {
+        // After a finished step, "nothing new" means she's done what the photo showed, not a bad photo.
+        if (state.stepsDone > 0) { track('photo_steps_finished', { done: state.stepsDone }); return allDone(); }
         track('photo_unclear');
         return unclear();
       }
@@ -354,8 +356,10 @@
       '<ul class="steps">' + cards + '</ul>' +
       easier + support +
       '<div class="spacer"></div>' +
+      (state.stepsDone > 0 ? endButton('quiet') : '') +
       '<button class="btn link" id="home">Start over</button>'
     );
+    bindEnd();
     on('[data-i]', (e) => doStep(state.steps[Number(e.currentTarget.getAttribute('data-i'))]));
     on('#easier', () => {
       state.easier += 1;
@@ -528,6 +532,35 @@
     }
   }
 
+  // ---------- ending a session whenever she wants ----------
+  function endButton(style) {
+    return '<button class="btn ' + style + '" id="end">I’m done for now</button>';
+  }
+  function bindEnd() {
+    on('#end', () => {
+      track('end_tapped', { from: screenName, done: state.stepsDone });
+      // With a finished step she gets the "You started" wrap-up; without one, just home, no guilt.
+      if (state.stepsDone > 0) stopWell(); else home();
+    });
+  }
+
+  function allDone() {
+    show('all_done',
+      '<p class="brand">Room Reset</p>' +
+      '<h1>That’s everything we spotted in your photo.</h1>' +
+      '<p class="lead">You did ' + state.stepsDone + (state.stepsDone === 1 ? ' step' : ' steps') + '. That’s a real start.</p>' +
+      '<div class="spacer"></div>' +
+      '<div class="actions">' +
+        endButton('primary') +
+        '<button class="btn quiet" id="spot">Pick a spot to keep going</button>' +
+        (photosLeft() > 0 ? '<button class="btn quiet" id="snap">Take a new photo</button>' : '') +
+      '</div>'
+    );
+    bindEnd();
+    on('#spot', spotPicker);
+    on('#snap', () => pickFile(handlePhoto));
+  }
+
   function unclear() {
     show('unclear',
       '<p class="brand">Room Reset</p>' +
@@ -536,8 +569,10 @@
       '<div class="actions">' +
         '<button class="btn primary" id="spot">Pick a spot</button>' +
         (photosLeft() > 0 ? '<button class="btn quiet" id="snap">Try another photo</button>' : '') +
+        endButton('link') +
       '</div>'
     );
+    bindEnd();
     on('#spot', spotPicker);
     on('#snap', () => pickFile(handlePhoto));
   }
