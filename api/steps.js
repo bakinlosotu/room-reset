@@ -1,8 +1,11 @@
 // Vercel serverless function: POST /api/steps
-// Sends one compressed room photo to Google Gemini (free tier) and returns up to 3 tiny steps.
+// Sends one compressed room photo to a free vision model and returns up to 3 tiny steps:
+// Cloudflare Workers AI first when set up, then Google Gemini.
 // The photo is never written to disk or logged here.
-// Env vars (Vercel > Project > Settings > Environment Variables):
-//   GEMINI_API_KEY  required, from https://aistudio.google.com (no billing account = free tier only)
+// Env vars (Vercel > Project > Settings > Environment Variables), at least one provider:
+//   CF_ACCOUNT_ID, CF_API_TOKEN  Cloudflare Workers AI (free daily allowance; token from the "Workers AI" template)
+//   CF_MODEL        optional; defaults to @cf/mistralai/mistral-small-3.1-24b-instruct
+//   GEMINI_API_KEY  from https://aistudio.google.com (no billing account = free tier only)
 //   GEMINI_MODEL    optional; tried first, then the free Flash models below
 
 // Tried in order until one answers. Model names change over time, busy models turn
@@ -141,51 +144,132 @@ function cleanSteps(raw, objects) {
     .map(({ text, effort, safety }) => ({ text, effort, safety }));
 }
 
-// Gemma models on the Gemini API don't take JSON mode or a schema, so they get the
-// shape in the prompt instead (parseJson copes with a fenced reply).
-const isGemma = (model) => /^gemma-/.test(model);
+// ---------- providers ----------
+// Each call returns { status, text, modelVersion, message }. status 200 means text holds the reply.
+
+// Gemma (on the Gemini API) and Cloudflare models don't take a JSON schema, so they get
+// the shape in the prompt instead (parseJson copes with a fenced reply).
 const STEPS_SHAPE = 'Reply with JSON only, no other text, in exactly this shape: ' +
   '{"objects":[{"name":"","where":""}],"status":"ok|tidy|unclear","hasPerson":false,"heavyClutter":false,' +
   '"steps":[{"object":"","text":"","effort":"tiny|small|a bit more","safety":null}]}';
 const CHECK_SHAPE = 'Reply with JSON only, no other text: {"hasPerson":true} or {"hasPerson":false}';
+const withShape = (prompt, mode) => prompt + '\n\n' + (mode === 'check' ? CHECK_SHAPE : STEPS_SHAPE);
 
-function requestFor(model, mode, image, prompt) {
-  const gemma = isGemma(model);
-  const text = gemma ? prompt + '\n\n' + (mode === 'check' ? CHECK_SHAPE : STEPS_SHAPE) : prompt;
+async function callGemini(model, mode, image, prompt, signal) {
+  const gemma = /^gemma-/.test(model);
   const generationConfig = gemma
     ? { temperature: 0.2 }
     : { responseMimeType: 'application/json', responseSchema: mode === 'check' ? CHECK_SCHEMA : STEPS_SCHEMA, temperature: 0.2 };
-  return JSON.stringify({
-    contents: [{ role: 'user', parts: [{ inline_data: { mime_type: 'image/jpeg', data: image } }, { text }] }],
-    generationConfig
-  });
+  const r = await fetch(
+    'https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(model) + ':generateContent',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': process.env.GEMINI_API_KEY },
+      body: JSON.stringify({
+        contents: [{ role: 'user', parts: [{ inline_data: { mime_type: 'image/jpeg', data: image } }, { text: gemma ? withShape(prompt, mode) : prompt }] }],
+        generationConfig
+      }),
+      signal
+    }
+  );
+  if (!r.ok) {
+    // Google's message says why (bad key, quota, retired model); it never contains the key.
+    let message = '';
+    try { message = ((await r.json()).error || {}).message || ''; } catch (e) { /* not JSON */ }
+    return { status: r.status, message };
+  }
+  const data = await r.json();
+  const parts = (data && data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts) || [];
+  return { status: 200, text: parts.map((p) => p.text || '').join(''), modelVersion: data.modelVersion || model };
 }
 
-// GET /api/steps?models=1 lists the Gemini and Gemma model names this key can use
-// (names only, never the key), so a retired or overloaded model can be swapped quickly.
-async function listModels(key, res) {
-  const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=200', { headers: { 'x-goog-api-key': key } });
-  if (!r.ok) return res.status(502).json({ error: 'upstream_error', status: r.status });
-  const data = await r.json();
-  const models = (data.models || [])
-    .filter((m) => (m.supportedGenerationMethods || []).includes('generateContent'))
-    .map((m) => String(m.name || '').replace(/^models\//, ''))
-    .filter((n) => /^(gemini|gemma)-/.test(n));
-  return res.status(200).json({ models });
+// Cloudflare Workers AI (free daily allowance). Needs CF_ACCOUNT_ID and CF_API_TOKEN.
+async function callCloudflare(model, mode, image, prompt, signal) {
+  const r = await fetch(
+    'https://api.cloudflare.com/client/v4/accounts/' + encodeURIComponent(process.env.CF_ACCOUNT_ID) + '/ai/run/' + model,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + process.env.CF_API_TOKEN },
+      body: JSON.stringify({
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'text', text: withShape(prompt, mode) },
+            { type: 'image_url', image_url: { url: 'data:image/jpeg;base64,' + image } }
+          ]
+        }],
+        max_tokens: 900,
+        temperature: 0.2
+      }),
+      signal
+    }
+  );
+  let data = null;
+  try { data = await r.json(); } catch (e) { /* not JSON */ }
+  if (!r.ok || !data || data.success === false) {
+    const err = data && data.errors && data.errors[0];
+    return { status: r.ok ? 502 : r.status, message: String((err && err.message) || '') };
+  }
+  const reply = data.result && data.result.response;
+  return { status: 200, text: typeof reply === 'string' ? reply : JSON.stringify(reply || ''), modelVersion: model };
+}
+
+const CF_ON = () => !!(process.env.CF_ACCOUNT_ID && process.env.CF_API_TOKEN);
+// Mistral Small 3.1 reads images without the licence step Meta's Llama vision model needs.
+const CF_MODEL = () => process.env.CF_MODEL || '@cf/mistralai/mistral-small-3.1-24b-instruct';
+const CF_ATTEMPT_TIMEOUT_MS = 9000;
+
+// Cloudflare first when it's set up (Gemini's free tier was refusing every request),
+// then the Gemini list. Any failure moves on to the next.
+function attempts(only) {
+  if (only) return [{ provider: only.startsWith('@cf/') ? 'cloudflare' : 'gemini', model: only }];
+  const list = CF_ON() ? [{ provider: 'cloudflare', model: CF_MODEL() }] : [];
+  if (process.env.GEMINI_API_KEY) MODELS.forEach((model) => list.push({ provider: 'gemini', model }));
+  return list;
+}
+
+// ---------- diagnostics: GET /api/steps?models=1 ----------
+// Lists the model names each provider offers this account (names only, never keys),
+// so a retired or overloaded model can be swapped quickly.
+async function listModels(res) {
+  const out = {};
+  if (process.env.GEMINI_API_KEY) {
+    const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=200', { headers: { 'x-goog-api-key': process.env.GEMINI_API_KEY } });
+    out.gemini = r.ok
+      ? ((await r.json()).models || [])
+        .filter((m) => (m.supportedGenerationMethods || []).includes('generateContent'))
+        .map((m) => String(m.name || '').replace(/^models\//, ''))
+        .filter((n) => /^(gemini|gemma)-/.test(n))
+      : 'error ' + r.status;
+  }
+  if (CF_ON()) {
+    const r = await fetch(
+      'https://api.cloudflare.com/client/v4/accounts/' + encodeURIComponent(process.env.CF_ACCOUNT_ID) + '/ai/models/search?per_page=200',
+      { headers: { Authorization: 'Bearer ' + process.env.CF_API_TOKEN } }
+    );
+    const data = r.ok ? await r.json() : null;
+    out.cloudflare = data && data.result
+      ? data.result
+        .filter((m) => /image|vision|multimodal/i.test(String(m.description || '')))
+        .map((m) => m.name + ' (' + ((m.task && m.task.name) || '') + ')')
+      : 'error ' + r.status;
+    out.cloudflareDefault = CF_MODEL();
+  }
+  return res.status(200).json(out);
 }
 
 module.exports = async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store');
-  const key = process.env.GEMINI_API_KEY;
+  const configured = !!process.env.GEMINI_API_KEY || CF_ON();
   if (req.method === 'GET' && req.query && req.query.models) {
-    if (!key) return res.status(503).json({ error: 'not_configured' });
-    return listModels(key, res);
+    if (!configured) return res.status(503).json({ error: 'not_configured' });
+    return listModels(res);
   }
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST, GET');
     return res.status(405).json({ error: 'method_not_allowed' });
   }
-  if (!key) return res.status(503).json({ error: 'not_configured' });
+  if (!configured) return res.status(503).json({ error: 'not_configured' });
 
   const body = typeof req.body === 'string' ? (parseJson(req.body) || {}) : (req.body || {});
   const image = typeof body.image === 'string' ? body.image : '';
@@ -203,52 +287,42 @@ module.exports = async function handler(req, res) {
   const deadline = Date.now() + UPSTREAM_TIMEOUT_MS;
   const prompt = mode === 'check' ? CHECK_PROMPT : stepsPrompt(easier, avoid, firstStep);
   // Testing only: {"model": "..."} tries just that model, with the whole time budget.
-  const only = typeof body.model === 'string' && /^(gemini|gemma)-[\w.-]+$/.test(body.model) ? body.model : null;
+  const only = typeof body.model === 'string' && /^((gemini|gemma)-[\w.-]+|@cf\/[\w.\/-]+)$/.test(body.model) ? body.model : null;
   try {
-    let upstream = null;
+    let reply = null;
     let model = null;
     const tried = [];
-    for (model of (only ? [only] : MODELS)) {
-      const budget = Math.min(only ? UPSTREAM_TIMEOUT_MS : ATTEMPT_TIMEOUT_MS, deadline - Date.now());
+    for (const attempt of attempts(only)) {
+      model = attempt.model;
+      const cap = only ? UPSTREAM_TIMEOUT_MS : (attempt.provider === 'cloudflare' ? CF_ATTEMPT_TIMEOUT_MS : ATTEMPT_TIMEOUT_MS);
+      const budget = Math.min(cap, deadline - Date.now());
       if (budget < 2000) break;
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), budget);
       try {
-        upstream = await fetch(
-          'https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(model) + ':generateContent',
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
-            body: requestFor(model, mode, image, prompt),
-            signal: ctrl.signal
-          }
-        );
+        const call = attempt.provider === 'cloudflare' ? callCloudflare : callGemini;
+        reply = await call(model, mode, image, prompt, ctrl.signal);
       } catch (err) {
         if (!err || err.name !== 'AbortError') throw err;
-        console.error('Gemini model timed out', model);
         tried.push(model + ':timeout');
-        upstream = null;
+        reply = null;
         continue;
       } finally {
         clearTimeout(timer);
       }
-      tried.push(model + ':' + upstream.status);
-      if (!RETRY_STATUSES.includes(upstream.status)) break;
-      console.error('Gemini model unavailable', model, upstream.status);
+      tried.push(model + ':' + reply.status);
+      if (reply.status === 200) break;
+      console.error('Model unavailable', model, reply.status, reply.message);
+      // Cloudflare failing (quota, licence, model name) always falls through to Gemini.
+      if (attempt.provider === 'gemini' && !RETRY_STATUSES.includes(reply.status)) break;
     }
-    if (!upstream) return res.status(504).json({ error: 'timeout', model, tried });
-    if (upstream.status === 429) return res.status(429).json({ error: 'rate_limited', model, tried });
-    if (!upstream.ok) {
-      // Google's message says why (bad key, API not enabled, region, model); it never contains the key.
-      let message = '';
-      try { message = ((await upstream.json()).error || {}).message || ''; } catch (e) { /* not JSON */ }
-      console.error('Gemini error', upstream.status, model, message);
-      return res.status(502).json({ error: 'upstream_error', status: upstream.status, model, tried, message: message.slice(0, 300) });
+    if (!reply) return res.status(504).json({ error: 'timeout', model, tried });
+    if (reply.status === 429) return res.status(429).json({ error: 'rate_limited', model, tried });
+    if (reply.status !== 200) {
+      return res.status(502).json({ error: 'upstream_error', status: reply.status, model, tried, message: String(reply.message || '').slice(0, 300) });
     }
-    const data = await upstream.json();
-    const parts = (data && data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts) || [];
-    const out = parseJson(parts.map((p) => p.text || '').join('')) || {};
-    const meta = { model, modelVersion: data.modelVersion || null };
+    const out = parseJson(reply.text) || {};
+    const meta = { model, modelVersion: reply.modelVersion || null, tried };
 
     if (mode === 'check') return res.status(200).json({ hasPerson: out.hasPerson !== false, ...meta });
 
