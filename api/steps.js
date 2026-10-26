@@ -232,7 +232,16 @@ function attempts(only) {
 // Lists the model names each provider offers this account (names only, never keys),
 // so a retired or overloaded model can be swapped quickly.
 async function listModels(res) {
-  const out = {};
+  // Which settings this deployment can see: names and yes/no only, never values.
+  const out = {
+    config: {
+      environment: process.env.VERCEL_ENV || 'unknown',
+      CF_ACCOUNT_ID: !!process.env.CF_ACCOUNT_ID,
+      CF_API_TOKEN: !!process.env.CF_API_TOKEN,
+      GEMINI_API_KEY: !!process.env.GEMINI_API_KEY,
+      otherNamesLikeCloudflare: Object.keys(process.env).filter((k) => /^(CF|CLOUDFLARE)|CF_/i.test(k) && !['CF_ACCOUNT_ID', 'CF_API_TOKEN', 'CF_MODEL'].includes(k))
+    }
+  };
   if (process.env.GEMINI_API_KEY) {
     const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=200', { headers: { 'x-goog-api-key': process.env.GEMINI_API_KEY } });
     out.gemini = r.ok
