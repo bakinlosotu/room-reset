@@ -298,7 +298,9 @@
     show('choose',
       '<p class="brand">Room Reset</p>' +
       '<h1>' + intro + '</h1>' +
-      '<p class="note">Each one takes 2 minutes or less.</p>' +
+      (state.stepsSource === 'fallback'
+        ? '<p class="note">We couldn’t read your photo just now, so these are general starting steps.</p>'
+        : '<p class="note">Each one takes 2 minutes or less.</p>') +
       '<ul class="steps">' + cards + '</ul>' +
       easier + support +
       '<div class="spacer"></div>' +
