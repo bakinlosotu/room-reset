@@ -19,7 +19,7 @@ const ATTEMPT_TIMEOUT_MS = 7000; // good answers took 2-7s; a slower try leaves 
 const EFFORTS = ['tiny', 'small', 'a bit more'];
 const BANNED = /\b(clean|tidy|organi[sz]e|declutter|sort)\s+(up\s+)?(the\s+|your\s+)?(whole\s+|entire\s+)?(room|bedroom|everything|space|flat|house)\b|\btidy everything\b/i;
 const MAX_IMAGE_CHARS = 2000000; // ~1.5 MB of JPEG; the app sends ~60-120 KB
-const UPSTREAM_TIMEOUT_MS = 13000;
+const UPSTREAM_TIMEOUT_MS = 14000; // the app waits 15s before showing general steps
 const STOPWORDS = new Set(['the', 'and', 'with', 'your', 'some', 'pair', 'pairs', 'set', 'pile', 'piles', 'bunch', 'small', 'large', 'big', 'little', 'few', 'two', 'three']);
 
 // The model must name what it can see BEFORE it writes steps (propertyOrdering puts
@@ -220,7 +220,7 @@ const CF_TOKEN = () => String(process.env.CF_API_TOKEN || '').trim();
 const CF_ON = () => !!(CF_ACCOUNT() && CF_TOKEN());
 // Mistral Small 3.1 reads images without the licence step Meta's Llama vision model needs.
 const CF_MODEL = () => process.env.CF_MODEL || '@cf/mistralai/mistral-small-3.1-24b-instruct';
-const CF_ATTEMPT_TIMEOUT_MS = 9000;
+const CF_ATTEMPT_TIMEOUT_MS = 12000; // Mistral Small 3.1 answered real room photos in 7-9.5s
 
 // Cloudflare first when it's set up (Gemini's free tier was refusing every request),
 // then the Gemini list. Any failure moves on to the next.
