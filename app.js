@@ -91,6 +91,56 @@
     store.set('rr_cap', { day: today(), used: (cap.day === today() ? cap.used : 0) + 1 });
   }
 
+  // ---------- Add to Home Screen (offered only after a win, on the stop screen) ----------
+  let installPrompt = null; // Android Chrome's install prompt, when the browser offers one
+  window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installPrompt = e; });
+  window.addEventListener('appinstalled', () => { store.set('rr_install_dismissed', true); track('app_installed'); });
+  const isInstalled = () => window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+  const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
+  function installHtml() {
+    if (isInstalled() || store.get('rr_install_dismissed', false)) return '';
+    const lead = '<p class="note">Want Room Reset one tap away next time?';
+    if (installPrompt) {
+      return '<div class="install">' + lead + '</p>' +
+        '<button class="btn quiet" id="install">Add to home screen</button>' +
+        '<button class="btn link" id="install-no">Not now</button></div>';
+    }
+    if (isIOS) {
+      return '<div class="install">' + lead + ' In Safari, tap the Share button, then <strong>Add to Home Screen</strong>.</p>' +
+        '<button class="btn link" id="install-no">Got it</button></div>';
+    }
+    return '';
+  }
+
+  function bindInstall() {
+    const hint = app.querySelector('.install');
+    if (!hint) return;
+    track('install_hint_shown', { kind: installPrompt ? 'prompt' : 'ios' });
+    on('#install', async () => {
+      const prompt = installPrompt;
+      installPrompt = null;
+      prompt.prompt();
+      const choice = await prompt.userChoice;
+      track('install_prompt_result', { outcome: choice.outcome });
+      hint.remove();
+    });
+    on('#install-no', () => {
+      store.set('rr_install_dismissed', true);
+      track('install_hint_dismissed');
+      hint.remove();
+    });
+  }
+
+  // ---------- first step (R10): until someone finishes a step, offer only tiny ones ----------
+  // Testers from before this flag existed already have a step_done event on their device.
+  if (!store.get('rr_has_done', false) && store.get('rr_events', []).some((e) => e.event === 'step_done')) {
+    store.set('rr_has_done', true);
+  }
+  const isFirstStep = () => !store.get('rr_has_done', false);
+  // Library level 2 = all tiny (see steps-library.js).
+  const libraryLevel = (easier) => (isFirstStep() ? Math.max(easier, 2) : easier);
+
   // ---------- session state (photos stay in memory only) ----------
   const state = {
     source: null,        // 'photo' | 'spot'
@@ -180,7 +230,7 @@
   async function fetchPhotoSteps() {
     loading('Looking for one small place to start…');
     try {
-      const data = await callApi({ image: state.image, easier: state.easier, avoid: state.seen });
+      const data = await callApi({ image: state.image, easier: state.easier, avoid: state.seen, firstStep: isFirstStep() });
       state.hasPerson = data.hasPerson !== false;
       state.heavyClutter = !!data.heavyClutter;
       if (data.status === 'unclear' || !Array.isArray(data.steps) || data.steps.length === 0) {
@@ -193,7 +243,7 @@
     } catch (err) {
       track('steps_fallback', { reason: err && err.name === 'AbortError' ? 'timeout' : String((err && err.message) || err) });
       state.tidy = false;
-      setSteps(Library.starter(state.easier, state.seen), 'fallback');
+      setSteps(Library.starter(libraryLevel(state.easier), state.seen), 'fallback');
     }
   }
 
@@ -272,7 +322,7 @@
       const spot = e.currentTarget.getAttribute('data-spot');
       Object.assign(state, { source: 'spot', spot, image: null, thumb: null, hasPerson: true, heavyClutter: false, tidy: false, easier: 0, seen: [] });
       track('spot_picked', { spot });
-      setSteps(Library.forSpot(spot, 0, []), 'library');
+      setSteps(Library.forSpot(spot, libraryLevel(0), []), 'library');
     });
     on('#back', home);
   }
@@ -300,7 +350,7 @@
       '<h1>' + intro + '</h1>' +
       (state.stepsSource === 'fallback'
         ? '<p class="note">We couldn’t read your photo just now, so these are general starting steps.</p>'
-        : '<p class="note">Each one takes 2 minutes or less.</p>') +
+        : '<p class="note">' + (isFirstStep() ? 'Each one takes under a minute.' : 'Each one takes 2 minutes or less.') + '</p>') +
       '<ul class="steps">' + cards + '</ul>' +
       easier + support +
       '<div class="spacer"></div>' +
@@ -311,7 +361,7 @@
       state.easier += 1;
       track('step_easier', { n: state.easier });
       if (state.source === 'photo' && state.image) fetchPhotoSteps();
-      else setSteps(Library.forSpot(state.spot || 'anywhere', state.easier, state.seen), 'library');
+      else setSteps(Library.forSpot(state.spot || 'anywhere', libraryLevel(state.easier), state.seen), 'library');
     });
     on('#spot', spotPicker);
     on('#home', home);
@@ -374,9 +424,12 @@
   function finishStep() {
     store.del('rr_current');
     state.stepsDone += 1;
+    const firstEver = isFirstStep();
+    store.set('rr_has_done', true);
     track('step_done', {
       n: state.stepsDone,
       first: state.stepsDone === 1,
+      first_ever: firstEver,
       ms_since_open: Date.now() - openedAt,
       effort: state.current && state.current.effort,
       source: state.stepsSource
@@ -435,6 +488,7 @@
       '</div>' +
       saveBlock +
       '<p class="note" id="save-msg" hidden></p>' +
+      installHtml() +
       '<div class="spacer"></div>' +
       '<button class="btn primary" id="finish">Done for now</button>'
     );
@@ -443,6 +497,7 @@
       track('feeling', { value: e.currentTarget.getAttribute('data-feel') });
     });
     on('#after', () => pickFile(saveAfterPhoto));
+    bindInstall();
     on('#finish', () => {
       Object.assign(state, { image: null, thumb: null, steps: [], seen: [], stepsDone: 0 });
       home();
@@ -551,7 +606,7 @@
   // ---------- start ----------
   window.addEventListener('pagehide', () => track('page_hide', { done: state.stepsDone, easier: state.easier }));
 
-  track('app_open');
+  track('app_open', { installed: isInstalled(), from_homescreen: params.get('source') === 'homescreen', first_step: isFirstStep() });
   const saved = store.get('rr_current', null);
   if (saved && saved.step && Date.now() - saved.at < CONFIG.RESUME_HOURS * 3600 * 1000) resume(saved);
   else { store.del('rr_current'); home(); }

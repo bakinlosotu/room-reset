@@ -110,11 +110,19 @@
     for (const effort of wanted.slice(0, count || 3)) {
       take((s) => s.effort === effort) || take((s) => RANK[s.effort] <= RANK[effort]);
     }
-    // Ran out of unseen steps: allow repeats rather than show fewer than asked.
+    // Ran out of unseen steps this small here: borrow unseen ones of the same size from
+    // "anywhere" before repeating, and never top up with a bigger step than was asked for.
+    const largest = Math.max(...wanted.map((e) => RANK[e]));
+    const fits = (s) => !chosen.includes(s) && RANK[s.effort] <= largest;
+    const anywhere = shuffle(SPOTS.anywhere.steps);
     while (chosen.length < (count || 3)) {
-      const again = pool.find((s) => !chosen.includes(s));
-      if (!again) break;
-      chosen.push(again);
+      const fresh = (s) => fits(s) && !chosen.some((c) => c.text === s.text);
+      const next = anywhere.find((s) => fresh(s) && !skip.has(s.text)) ||
+        pool.find(fits) ||
+        anywhere.find(fresh) ||
+        pool.find((s) => !chosen.includes(s));
+      if (!next) break;
+      chosen.push(next);
     }
     return chosen.map((s) => ({ text: s.text, effort: s.effort, safety: null }));
   }

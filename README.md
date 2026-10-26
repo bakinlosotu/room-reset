@@ -78,6 +78,8 @@ Use Antigravity's Source Control panel, or GitHub Desktop (free):
 | --- | --- |
 | Key: first-step completion | `app_open` (new_user) → `step_done` with `first: true`, by `arm` |
 | Time to first "Done" | `ms_since_open` on `step_done` (first) |
+| Activation: aha in under 2 minutes (R10) | `step_done` with `first_ever: true` and `ms_since_open` under 120000 |
+| Add to Home Screen | `install_hint_shown`, `install_prompt_result`, `install_hint_dismissed`, `app_installed`; returning from the icon shows `from_homescreen: true` on `app_open` |
 | 7-day return | a second `app_open` session from the same person within 7 days |
 | Steps per session | `n` on the last `step_done` per `session` |
 | Guardrail: 3× easier then leave | `step_easier` with `n: 3` followed by `page_hide` |

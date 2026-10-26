@@ -62,7 +62,7 @@ const CHECK_SCHEMA = {
   required: ['hasPerson']
 };
 
-function stepsPrompt(easier, avoid) {
+function stepsPrompt(easier, avoid, firstStep) {
   return [
     'You help someone who finds it hard to START tidying their room. Look carefully at this photo.',
     '',
@@ -89,9 +89,11 @@ function stepsPrompt(easier, avoid) {
     'Never describe people, faces, documents, screens or anything personal; steps are about objects only.',
     'heavyClutter: true only if the floor and surfaces are almost entirely covered. Then make every step "tiny".',
     'safety: a short caution if a step involves broken glass, mould, sharp objects, chemicals or heavy lifting, else null.',
-    easier > 0
-      ? 'The person asked for something easier ' + easier + ' time(s). Make every step smaller and quicker' + (easier >= 2 ? ', all "tiny"' : '') + '.'
-      : 'Where possible, offer one "tiny", one "small" and one "a bit more" step.',
+    firstStep
+      ? 'This is their very first step with the app. Every step must be "tiny": one object, done in under a minute.'
+      : easier > 0
+        ? 'The person asked for something easier ' + easier + ' time(s). Make every step smaller and quicker' + (easier >= 2 ? ', all "tiny"' : '') + '.'
+        : 'Where possible, offer one "tiny", one "small" and one "a bit more" step.',
     avoid.length ? 'Do not repeat these steps: ' + JSON.stringify(avoid) : ''
   ].filter((line) => line !== null).join('\n');
 }
@@ -155,6 +157,7 @@ module.exports = async function handler(req, res) {
   }
   const mode = body.mode === 'check' ? 'check' : 'steps';
   const easier = Math.max(0, Math.min(3, parseInt(body.easier, 10) || 0));
+  const firstStep = body.firstStep === true;
   const avoid = (Array.isArray(body.avoid) ? body.avoid : [])
     .filter((s) => typeof s === 'string')
     .slice(-12)
@@ -166,7 +169,7 @@ module.exports = async function handler(req, res) {
       role: 'user',
       parts: [
         { inline_data: { mime_type: 'image/jpeg', data: image } },
-        { text: mode === 'check' ? CHECK_PROMPT : stepsPrompt(easier, avoid) }
+        { text: mode === 'check' ? CHECK_PROMPT : stepsPrompt(easier, avoid, firstStep) }
       ]
     }],
     generationConfig: {
@@ -224,7 +227,9 @@ module.exports = async function handler(req, res) {
     if (mode === 'check') return res.status(200).json({ hasPerson: out.hasPerson !== false, ...meta });
 
     const objects = cleanObjects(out.objects);
-    const steps = objects.length >= 2 ? cleanSteps(out.steps, objects) : [];
+    let steps = objects.length >= 2 ? cleanSteps(out.steps, objects) : [];
+    // R10: on a first step keep only tiny ones, unless the model gave none (then keep what we have).
+    if (firstStep && steps.some((s) => s.effort === 'tiny')) steps = steps.filter((s) => s.effort === 'tiny');
     const status = steps.length === 0 ? 'unclear' : (out.status === 'tidy' ? 'tidy' : 'ok');
     return res.status(200).json({
       status,

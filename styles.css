@@ -164,3 +164,6 @@ h2 { margin: 8px 0 0; font-size: 20px; }
 .debug { font-size: 13px; background: var(--surface); border: 1px dashed var(--line); border-radius: 12px; padding: 12px; overflow-x: auto; }
 .debug table { border-collapse: collapse; width: 100%; }
 .debug td { padding: 2px 6px; border-bottom: 1px solid var(--line); }
+
+.install { display: grid; gap: 8px; padding: 16px; border-radius: var(--radius); background: var(--accent-soft); }
+.install .btn.link { min-height: 40px; }
