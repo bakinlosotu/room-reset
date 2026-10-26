@@ -169,7 +169,7 @@
       if (!res.ok) {
         let detail = {};
         try { detail = await res.json(); } catch (e) { /* not JSON */ }
-        throw new Error(['http_' + res.status, detail.error, detail.status, detail.model, detail.message].filter(Boolean).join(' | '));
+        throw new Error(['http_' + res.status, detail.error, detail.status, detail.model, (detail.tried || []).join(','), detail.message].filter(Boolean).join(' | '));
       }
       return await res.json();
     } finally {

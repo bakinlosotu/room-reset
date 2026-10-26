@@ -9,7 +9,7 @@
 // free-tier requests away, and each model has its own free quota, so any of those moves
 // on to the next instead of failing the photo. Flash-Lite first: in live tests it was the
 // one that answered (5-8s) while full Flash was overloaded.
-const MODELS = [process.env.GEMINI_MODEL, 'gemini-flash-lite-latest', 'gemini-flash-latest', 'gemini-2.5-flash-lite', 'gemini-2.5-flash']
+const MODELS = [process.env.GEMINI_MODEL, 'gemini-flash-lite-latest', 'gemini-flash-latest', 'gemini-2.5-flash-lite']
   .filter((m, i, all) => m && all.indexOf(m) === i);
 const RETRY_STATUSES = [404, 429, 500, 503];
 const ATTEMPT_TIMEOUT_MS = 9000;
@@ -178,6 +178,7 @@ module.exports = async function handler(req, res) {
   try {
     let upstream = null;
     let model = null;
+    const tried = [];
     for (model of MODELS) {
       const budget = Math.min(ATTEMPT_TIMEOUT_MS, deadline - Date.now());
       if (budget < 2000) break;
@@ -196,22 +197,24 @@ module.exports = async function handler(req, res) {
       } catch (err) {
         if (!err || err.name !== 'AbortError') throw err;
         console.error('Gemini model timed out', model);
+        tried.push(model + ':timeout');
         upstream = null;
         continue;
       } finally {
         clearTimeout(timer);
       }
+      tried.push(model + ':' + upstream.status);
       if (!RETRY_STATUSES.includes(upstream.status)) break;
       console.error('Gemini model unavailable', model, upstream.status);
     }
-    if (!upstream) return res.status(504).json({ error: 'timeout', model });
-    if (upstream.status === 429) return res.status(429).json({ error: 'rate_limited', model });
+    if (!upstream) return res.status(504).json({ error: 'timeout', model, tried });
+    if (upstream.status === 429) return res.status(429).json({ error: 'rate_limited', model, tried });
     if (!upstream.ok) {
       // Google's message says why (bad key, API not enabled, region, model); it never contains the key.
       let message = '';
       try { message = ((await upstream.json()).error || {}).message || ''; } catch (e) { /* not JSON */ }
       console.error('Gemini error', upstream.status, model, message);
-      return res.status(502).json({ error: 'upstream_error', status: upstream.status, model, message: message.slice(0, 300) });
+      return res.status(502).json({ error: 'upstream_error', status: upstream.status, model, tried, message: message.slice(0, 300) });
     }
     const data = await upstream.json();
     const parts = (data && data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts) || [];
