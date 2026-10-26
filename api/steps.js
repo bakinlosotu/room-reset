@@ -9,10 +9,10 @@
 // free-tier requests away, and each model has its own free quota, so any of those moves
 // on to the next instead of failing the photo. Flash-Lite first: in live tests it was the
 // one that answered (5-8s) while full Flash was overloaded.
-const MODELS = [process.env.GEMINI_MODEL, 'gemini-flash-lite-latest', 'gemini-flash-latest', 'gemini-2.5-flash-lite']
+const MODELS = [process.env.GEMINI_MODEL, 'gemini-flash-lite-latest', 'gemini-flash-latest', 'gemini-3.5-flash-lite']
   .filter((m, i, all) => m && all.indexOf(m) === i);
 const RETRY_STATUSES = [404, 429, 500, 503];
-const ATTEMPT_TIMEOUT_MS = 9000;
+const ATTEMPT_TIMEOUT_MS = 7000; // good answers took 2-7s; a slower try leaves time for one more
 const EFFORTS = ['tiny', 'small', 'a bit more'];
 const BANNED = /\b(clean|tidy|organi[sz]e|declutter|sort)\s+(up\s+)?(the\s+|your\s+)?(whole\s+|entire\s+)?(room|bedroom|everything|space|flat|house)\b|\btidy everything\b/i;
 const MAX_IMAGE_CHARS = 2000000; // ~1.5 MB of JPEG; the app sends ~60-120 KB
