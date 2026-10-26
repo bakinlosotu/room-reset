@@ -5,10 +5,14 @@
 //   GEMINI_API_KEY  required, from https://aistudio.google.com (no billing account = free tier only)
 //   GEMINI_MODEL    optional; tried first, then the free Flash models below
 
-// Tried in order until one answers. Model names change over time and busy models
-// turn free-tier requests away, so either moves on to the next instead of failing the photo.
-const MODELS = [process.env.GEMINI_MODEL, 'gemini-flash-latest', 'gemini-2.5-flash', 'gemini-flash-lite-latest', 'gemini-2.5-flash-lite']
+// Tried in order until one answers. Model names change over time, busy models turn
+// free-tier requests away, and each model has its own free quota, so any of those moves
+// on to the next instead of failing the photo. Flash-Lite first: in live tests it was the
+// one that answered (5-8s) while full Flash was overloaded.
+const MODELS = [process.env.GEMINI_MODEL, 'gemini-flash-lite-latest', 'gemini-flash-latest', 'gemini-2.5-flash-lite', 'gemini-2.5-flash']
   .filter((m, i, all) => m && all.indexOf(m) === i);
+const RETRY_STATUSES = [404, 429, 500, 503];
+const ATTEMPT_TIMEOUT_MS = 9000;
 const EFFORTS = ['tiny', 'small', 'a bit more'];
 const BANNED = /\b(clean|tidy|organi[sz]e|declutter|sort)\s+(up\s+)?(the\s+|your\s+)?(whole\s+|entire\s+)?(room|bedroom|everything|space|flat|house)\b|\btidy everything\b/i;
 const MAX_IMAGE_CHARS = 2000000; // ~1.5 MB of JPEG; the app sends ~60-120 KB
@@ -152,8 +156,7 @@ module.exports = async function handler(req, res) {
     .slice(-12)
     .map((s) => s.slice(0, 160));
 
-  const ctrl = new AbortController();
-  const timeout = setTimeout(() => ctrl.abort(), UPSTREAM_TIMEOUT_MS);
+  const deadline = Date.now() + UPSTREAM_TIMEOUT_MS;
   const request = JSON.stringify({
     contents: [{
       role: 'user',
@@ -172,19 +175,32 @@ module.exports = async function handler(req, res) {
     let upstream = null;
     let model = null;
     for (model of MODELS) {
-      upstream = await fetch(
-        'https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(model) + ':generateContent',
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
-          body: request,
-          signal: ctrl.signal
-        }
-      );
-      // Not found, or overloaded (free-tier requests are the first turned away): try the next model.
-      if (![404, 500, 503].includes(upstream.status)) break;
+      const budget = Math.min(ATTEMPT_TIMEOUT_MS, deadline - Date.now());
+      if (budget < 2000) break;
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), budget);
+      try {
+        upstream = await fetch(
+          'https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(model) + ':generateContent',
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
+            body: request,
+            signal: ctrl.signal
+          }
+        );
+      } catch (err) {
+        if (!err || err.name !== 'AbortError') throw err;
+        console.error('Gemini model timed out', model);
+        upstream = null;
+        continue;
+      } finally {
+        clearTimeout(timer);
+      }
+      if (!RETRY_STATUSES.includes(upstream.status)) break;
       console.error('Gemini model unavailable', model, upstream.status);
     }
+    if (!upstream) return res.status(504).json({ error: 'timeout', model });
     if (upstream.status === 429) return res.status(429).json({ error: 'rate_limited', model });
     if (!upstream.ok) {
       // Google's message says why (bad key, API not enabled, region, model); it never contains the key.
@@ -213,10 +229,7 @@ module.exports = async function handler(req, res) {
       ...meta
     });
   } catch (err) {
-    const timedOut = err && err.name === 'AbortError';
-    console.error('steps failed', timedOut ? 'timeout' : String(err && err.message));
-    return res.status(timedOut ? 504 : 500).json({ error: timedOut ? 'timeout' : 'server_error' });
-  } finally {
-    clearTimeout(timeout);
+    console.error('steps failed', String(err && err.message));
+    return res.status(500).json({ error: 'server_error' });
   }
 };
