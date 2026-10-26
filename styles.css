@@ -42,7 +42,7 @@ body {
   max-width: 480px;
   margin: 0 auto;
   min-height: 100dvh;
-  padding: calc(24px + env(safe-area-inset-top)) 16px calc(32px + env(safe-area-inset-bottom));
+  padding: calc(24px + env(safe-area-inset-top)) 16px calc(96px + env(safe-area-inset-bottom)); /* clears Safari's floating bottom toolbar */
   display: flex;
   flex-direction: column;
   gap: 16px;

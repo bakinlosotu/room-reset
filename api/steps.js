@@ -141,13 +141,50 @@ function cleanSteps(raw, objects) {
     .map(({ text, effort, safety }) => ({ text, effort, safety }));
 }
 
+// Gemma models on the Gemini API don't take JSON mode or a schema, so they get the
+// shape in the prompt instead (parseJson copes with a fenced reply).
+const isGemma = (model) => /^gemma-/.test(model);
+const STEPS_SHAPE = 'Reply with JSON only, no other text, in exactly this shape: ' +
+  '{"objects":[{"name":"","where":""}],"status":"ok|tidy|unclear","hasPerson":false,"heavyClutter":false,' +
+  '"steps":[{"object":"","text":"","effort":"tiny|small|a bit more","safety":null}]}';
+const CHECK_SHAPE = 'Reply with JSON only, no other text: {"hasPerson":true} or {"hasPerson":false}';
+
+function requestFor(model, mode, image, prompt) {
+  const gemma = isGemma(model);
+  const text = gemma ? prompt + '\n\n' + (mode === 'check' ? CHECK_SHAPE : STEPS_SHAPE) : prompt;
+  const generationConfig = gemma
+    ? { temperature: 0.2 }
+    : { responseMimeType: 'application/json', responseSchema: mode === 'check' ? CHECK_SCHEMA : STEPS_SCHEMA, temperature: 0.2 };
+  return JSON.stringify({
+    contents: [{ role: 'user', parts: [{ inline_data: { mime_type: 'image/jpeg', data: image } }, { text }] }],
+    generationConfig
+  });
+}
+
+// GET /api/steps?models=1 lists the Gemini and Gemma model names this key can use
+// (names only, never the key), so a retired or overloaded model can be swapped quickly.
+async function listModels(key, res) {
+  const r = await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=200', { headers: { 'x-goog-api-key': key } });
+  if (!r.ok) return res.status(502).json({ error: 'upstream_error', status: r.status });
+  const data = await r.json();
+  const models = (data.models || [])
+    .filter((m) => (m.supportedGenerationMethods || []).includes('generateContent'))
+    .map((m) => String(m.name || '').replace(/^models\//, ''))
+    .filter((n) => /^(gemini|gemma)-/.test(n));
+  return res.status(200).json({ models });
+}
+
 module.exports = async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store');
+  const key = process.env.GEMINI_API_KEY;
+  if (req.method === 'GET' && req.query && req.query.models) {
+    if (!key) return res.status(503).json({ error: 'not_configured' });
+    return listModels(key, res);
+  }
   if (req.method !== 'POST') {
-    res.setHeader('Allow', 'POST');
+    res.setHeader('Allow', 'POST, GET');
     return res.status(405).json({ error: 'method_not_allowed' });
   }
-  const key = process.env.GEMINI_API_KEY;
   if (!key) return res.status(503).json({ error: 'not_configured' });
 
   const body = typeof req.body === 'string' ? (parseJson(req.body) || {}) : (req.body || {});
@@ -164,26 +201,15 @@ module.exports = async function handler(req, res) {
     .map((s) => s.slice(0, 160));
 
   const deadline = Date.now() + UPSTREAM_TIMEOUT_MS;
-  const request = JSON.stringify({
-    contents: [{
-      role: 'user',
-      parts: [
-        { inline_data: { mime_type: 'image/jpeg', data: image } },
-        { text: mode === 'check' ? CHECK_PROMPT : stepsPrompt(easier, avoid, firstStep) }
-      ]
-    }],
-    generationConfig: {
-      responseMimeType: 'application/json',
-      responseSchema: mode === 'check' ? CHECK_SCHEMA : STEPS_SCHEMA,
-      temperature: 0.2
-    }
-  });
+  const prompt = mode === 'check' ? CHECK_PROMPT : stepsPrompt(easier, avoid, firstStep);
+  // Testing only: {"model": "..."} tries just that model, with the whole time budget.
+  const only = typeof body.model === 'string' && /^(gemini|gemma)-[\w.-]+$/.test(body.model) ? body.model : null;
   try {
     let upstream = null;
     let model = null;
     const tried = [];
-    for (model of MODELS) {
-      const budget = Math.min(ATTEMPT_TIMEOUT_MS, deadline - Date.now());
+    for (model of (only ? [only] : MODELS)) {
+      const budget = Math.min(only ? UPSTREAM_TIMEOUT_MS : ATTEMPT_TIMEOUT_MS, deadline - Date.now());
       if (budget < 2000) break;
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), budget);
@@ -193,7 +219,7 @@ module.exports = async function handler(req, res) {
           {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
-            body: request,
+            body: requestFor(model, mode, image, prompt),
             signal: ctrl.signal
           }
         );
