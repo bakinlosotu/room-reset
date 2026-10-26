@@ -186,10 +186,10 @@ async function callGemini(model, mode, image, prompt, signal) {
 // Cloudflare Workers AI (free daily allowance). Needs CF_ACCOUNT_ID and CF_API_TOKEN.
 async function callCloudflare(model, mode, image, prompt, signal) {
   const r = await fetch(
-    'https://api.cloudflare.com/client/v4/accounts/' + encodeURIComponent(process.env.CF_ACCOUNT_ID) + '/ai/run/' + model,
+    'https://api.cloudflare.com/client/v4/accounts/' + encodeURIComponent(CF_ACCOUNT()) + '/ai/run/' + model,
     {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + process.env.CF_API_TOKEN },
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + CF_TOKEN() },
       body: JSON.stringify({
         messages: [{
           role: 'user',
@@ -214,7 +214,10 @@ async function callCloudflare(model, mode, image, prompt, signal) {
   return { status: 200, text: typeof reply === 'string' ? reply : JSON.stringify(reply || ''), modelVersion: model };
 }
 
-const CF_ON = () => !!(process.env.CF_ACCOUNT_ID && process.env.CF_API_TOKEN);
+// Trimmed: a pasted value with a stray space or line break fails authentication.
+const CF_ACCOUNT = () => String(process.env.CF_ACCOUNT_ID || '').trim();
+const CF_TOKEN = () => String(process.env.CF_API_TOKEN || '').trim();
+const CF_ON = () => !!(CF_ACCOUNT() && CF_TOKEN());
 // Mistral Small 3.1 reads images without the licence step Meta's Llama vision model needs.
 const CF_MODEL = () => process.env.CF_MODEL || '@cf/mistralai/mistral-small-3.1-24b-instruct';
 const CF_ATTEMPT_TIMEOUT_MS = 9000;
@@ -252,9 +255,22 @@ async function listModels(res) {
       : 'error ' + r.status;
   }
   if (CF_ON()) {
+    // Shape checks and Cloudflare's own token check; still no values returned.
+    const rawToken = String(process.env.CF_API_TOKEN || '');
+    out.config.cfAccountIdLooksRight = /^[0-9a-f]{32}$/.test(CF_ACCOUNT());
+    out.config.cfTokenHadSpaces = rawToken !== rawToken.trim();
+    out.config.cfTokenLength = CF_TOKEN().length;
+    out.config.cfTokenLooksLikeGlobalKey = /^[0-9a-f]{37}$/.test(CF_TOKEN());
+    const verify = async (url) => {
+      const v = await fetch(url, { headers: { Authorization: 'Bearer ' + CF_TOKEN() } });
+      const d = await v.json().catch(() => null);
+      return v.ok && d && d.result ? d.result.status : 'error ' + v.status + (d && d.errors && d.errors[0] ? ' ' + d.errors[0].message : '');
+    };
+    out.config.cfTokenUserCheck = await verify('https://api.cloudflare.com/client/v4/user/tokens/verify');
+    out.config.cfTokenAccountCheck = await verify('https://api.cloudflare.com/client/v4/accounts/' + encodeURIComponent(CF_ACCOUNT()) + '/tokens/verify');
     const r = await fetch(
-      'https://api.cloudflare.com/client/v4/accounts/' + encodeURIComponent(process.env.CF_ACCOUNT_ID) + '/ai/models/search?per_page=200',
-      { headers: { Authorization: 'Bearer ' + process.env.CF_API_TOKEN } }
+      'https://api.cloudflare.com/client/v4/accounts/' + encodeURIComponent(CF_ACCOUNT()) + '/ai/models/search?per_page=200',
+      { headers: { Authorization: 'Bearer ' + CF_TOKEN() } }
     );
     const data = r.ok ? await r.json() : null;
     out.cloudflare = data && data.result
