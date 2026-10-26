@@ -4,7 +4,7 @@
 
   const CONFIG = {
     DAILY_PHOTO_CAP: 5,        // free photo starts per day (protects the free AI quota)
-    CLIENT_TIMEOUT_MS: 10000,  // after this, show built-in starter steps instead
+    CLIENT_TIMEOUT_MS: 15000,  // after this, show built-in starter steps instead (free-tier Gemini can take 10s+)
     MAX_EASIER: 3,             // "Something easier" can be used this many times
     TIMER_SECONDS: 120,
     RESUME_HOURS: 12,
@@ -151,7 +151,8 @@
   }
   async function prepareImage(file) {
     const img = await loadImage(file);
-    return { data: resize(img, 1024, 0.7).split(',')[1], thumb: resize(img, 480, 0.6) };
+    // 768px fits in one Gemini image tile: faster and still enough to see objects.
+    return { data: resize(img, 768, 0.75).split(',')[1], thumb: resize(img, 480, 0.6) };
   }
 
   // ---------- API ----------
@@ -187,9 +188,8 @@
         return unclear();
       }
       state.tidy = data.status === 'tidy';
-      let steps = data.steps.slice(0, 3);
-      if (steps.length < 3) steps = steps.concat(Library.starter(state.easier, state.seen.concat(steps.map((s) => s.text)), 3 - steps.length));
-      setSteps(steps, 'ai');
+      // Show only steps grounded in the photo; topping up with generic ones made photos look ignored.
+      setSteps(data.steps.slice(0, 3), 'ai');
     } catch (err) {
       track('steps_fallback', { reason: err && err.name === 'AbortError' ? 'timeout' : String((err && err.message) || err) });
       state.tidy = false;
