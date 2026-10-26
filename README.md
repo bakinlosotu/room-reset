@@ -17,7 +17,7 @@ No build step, no npm packages, no database.
 ## Why it costs nothing
 
 - **Hosting:** Vercel Hobby plan (free).
-- **AI:** Google Gemini API free tier. Create the key in Google AI Studio **without** adding a billing account, so it can never charge you. If the free quota runs out, the app quietly switches to built-in steps.
+- **AI:** Google Gemini API free tier. Create the key in Google AI Studio **without** adding a billing account, so it can never charge you. If the free quota runs out or Gemini is too busy (it can be slow at peak times), the app shows built-in steps and tells the tester they are general, not from their photo.
 - **Spot picker:** no AI at all.
 - **Analytics:** events are kept on each device (open `?debug=1` to see and download them). Optionally, connect PostHog's free plan to collect them from every tester in one place.
 
@@ -63,7 +63,7 @@ Use Antigravity's Source Control panel, or GitHub Desktop (free):
 1. Sign in at https://vercel.com with GitHub (Hobby plan).
 2. **Add New → Project**, import `room-reset`. Framework preset: **Other**. No build command.
 3. Under **Environment Variables**, add `GEMINI_API_KEY` = your key.
-4. Optional: add `GEMINI_MODEL` if you want a different free model (default `gemini-flash-latest`; try `gemini-flash-lite-latest` if steps are too slow).
+4. Optional: add `GEMINI_MODEL` if you want a different free model (tried first; then `gemini-flash-lite-latest`, `gemini-flash-latest` and `gemini-3.5-flash-lite`).
 5. Deploy. Every push to GitHub redeploys automatically.
 
 ## Optional: collect test data with PostHog (free)
@@ -90,3 +90,13 @@ Use Antigravity's Source Control panel, or GitHub Desktop (free):
 - Force a test group: `?arm=photo_first` or `?arm=picker_first` (only for your own testing; real testers are split 50/50 automatically).
 - See events on a device: `?debug=1`.
 - Daily free photo starts: `DAILY_PHOTO_CAP` in `app.js` (default 5).
+
+## When a photo gets general steps
+
+Open the site with `?debug=1` and look at the `steps_fallback` event. It lists every model tried and what it said:
+
+| You see | Meaning |
+| --- | --- |
+| `:timeout` or `:503` on every model | Gemini's free tier is busy; try again later or at an off-peak time |
+| `:429` | That model's free quota is used up; it resets at midnight Pacific time (8am UK) |
+| `:404` | Google retired that model name; set `GEMINI_MODEL` to the replacement it names |
