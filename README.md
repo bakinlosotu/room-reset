@@ -102,3 +102,16 @@ Open the site with `?debug=1` and look at the `steps_fallback` event. It lists e
 | `:timeout` or `:503` on every model | Gemini's free tier is busy; try again later or at an off-peak time |
 | `:429` | That model's free quota is used up; it resets at midnight Pacific time (8am UK) |
 | `:404` | Google retired that model name; set `GEMINI_MODEL` to the replacement it names |
+
+## Photo AI providers
+
+Photos go to **Cloudflare Workers AI** first (Mistral Small 3.1, free daily allowance), then fall back to **Google Gemini** if Cloudflare fails. In live tests on 26 October 2026, Gemini's free tier refused or timed out on every model, while Cloudflare answered real room photos in 7–10 seconds with accurate steps.
+
+| Vercel variable | What it is |
+| --- | --- |
+| `CF_ACCOUNT_ID` | The 32-character code in your Cloudflare dashboard address (`dash.cloudflare.com/<this>/home`) |
+| `CF_API_TOKEN` | A Cloudflare API token with **Account · Workers AI · Edit** for your account (use the Workers AI template) |
+| `CF_MODEL` | Optional; defaults to `@cf/mistralai/mistral-small-3.1-24b-instruct` |
+| `GEMINI_API_KEY` | Backup provider |
+
+Check the setup at `/api/steps?models=1`: the `config` block shows yes/no for each setting (never values) and Cloudflare's own token check. Workers AI's free allowance resets daily at 00:00 UTC; watch usage in the Cloudflare dashboard under Workers AI.
